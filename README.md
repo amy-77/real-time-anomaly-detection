@@ -192,11 +192,6 @@ A: `weather_stream.db` SQLite database, updated in real-time
 python view_data.py --realtime
 ```
 
-**Q3: Stop data collection?**  
-```bash
-bash manage_collector.sh stop
-```
-
 **Q4: Which detection method?**  
 - **Daily**: `mad` - balanced sensitivity & robustness
 - **Conservative**: `3sigma` - extreme anomalies only
@@ -248,13 +243,6 @@ python spatial_anomaly_detector.py --time "TIME"
 - **numpy** - Numerical computation
 - **statsmodels** (optional) - ARIMA/STL models
 - **scikit-learn** (optional) - ML methods
-
----
-
-## 📞 Contact
-
-- **Project Path**: `/data/qwang/q/datagem/stream_detection/`
-- **Server**: `qwang@172.27.96.38` (internal) / `193.48.200.25` (public)
 - **Data Source**: National Observatory of Athens (NOA)
 
 ---

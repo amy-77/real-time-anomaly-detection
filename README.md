@@ -11,7 +11,7 @@ Real-time monitoring and anomaly detection for 14 meteorological stations from t
 This system uses a two-step verification process to minimize false alarms.
 
 ```mermaid
-graph TD
+flowchart TD
     A[Start Detection] --> B{1. Temporal Check}
     B -- Normal --> C[✅ Ignore]
     B -- Anomalous? --> D{2. Spatial Check}

@@ -40,6 +40,8 @@ It is recommended to use Conda or venv to manage dependencies.
 
 ```bash
 # Activate your environment
+source ~/software/miniconda3/bin/activate datagem
+# OR
 conda activate datagem
 ```
 
@@ -145,10 +147,12 @@ Used in **Step 1** to detect if a single station is behaving abnormally compared
 ### 2. Spatial Methods (Space Dimension)
 Used in **Step 2** to verify if the anomaly is isolated or widespread.
 
+> **Note on Missing Data**: We use **Linear Interpolation** to fill gaps in neighbor data before comparison, ensuring robust correlation even with occasional data loss.
+
 | Method | Description | Logic |
 | :--- | :--- | :--- |
 | **`pearson`** | Pearson Correlation (Trend) | Checks if neighbor trends match (`>0.6` = Match, `<0.3` = Mismatch). |
-| **`distance`** | Euclidean/Haversine Distance | Checks value magnitude difference (Static snapshot comparison). |
+| **`distance`** | MAD Deviation (Static) | **Fallback method**. Checks if current value deviates from neighbors' median (`> 3 * MAD`). |
 
 ---
 

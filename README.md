@@ -40,8 +40,6 @@ It is recommended to use Conda or venv to manage dependencies.
 
 ```bash
 # Activate your environment
-source ~/software/miniconda3/bin/activate datagem
-# OR
 conda activate datagem
 ```
 

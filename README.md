@@ -2,257 +2,126 @@
 
 Real-time monitoring and anomaly detection for 14 meteorological stations from the National Observatory of Athens (NOA).
 
----
-
-## 🚀 Quick Start
-
-### 1. Start Data Collection
-
-```bash
-cd /data/qwang/q/datagem/stream_detection
-source ~/software/miniconda3/bin/activate datagem
-
-# Start background collector (every 10 minutes)
-bash manage_collector.sh start
-```
-
-### 2. View Data
-
-```bash
-# View latest data
-python view_data.py --realtime
-
-# View specific station
-python view_data.py --station heraclion --latest 20
-```
-
-### 3. Anomaly Detection
-
-```bash
-# Temporal anomaly detection (single station, time window)
-python anomaly_detector.py --end "2025-11-21 02:00:00" --window 6 --method mad
-
-# Spatial anomaly detection (all stations, single timestamp)
-python spatial_anomaly_detector.py --time "2025-11-21 02:00:00"
-```
+> **Note**: This system now uses a **Dual-Verification Strategy** (Temporal + Spatial) to distinguish between device failures and extreme weather events.
 
 ---
 
-## 🔧 System Components
+## 🧠 Core Logic: Time-Space Dual Verification
 
-### Data Collection
-- **`streaming_collector_sqlite.py`** - Fetches data every 10 minutes from GeoJSON source
-- **`weather_stream.db`** - SQLite database storing all historical data
-- **`manage_collector.sh`** - Process management (start/stop/status)
+This system uses a two-step verification process to minimize false alarms.
 
-### Anomaly Detection
-- **`anomaly_detector.py`** - Temporal anomaly detection (11 methods)
-- **`spatial_anomaly_detector.py`** - Spatial anomaly detection
-- **`view_data.py`** - Data query and export tool
+```mermaid
+graph TD
+    A[Start Detection] --> B{1. Temporal Check}
+    B -- Normal --> C[✅ Ignore]
+    B -- Anomalous? --> D{2. Spatial Check}
+    D -- Trend Matches Neighbors --> E[🌧️ Weather Event]
+    D -- Trend Contradicts Neighbors --> F[🔴 Device Failure]
+```
 
+### Step 1: Temporal Detection ("Self-Check")
+*   **Question**: "Is the station's current value consistent with its own history?"
+*   **Method**: **ARIMA** (AutoRegressive Integrated Moving Average) predicts the next value based on the past 6 hours.
+*   **Result**: If the actual value deviates significantly from the prediction, it is flagged as a **Suspect**.
 
-## 📊 Detection Methods
-
-### 🕐 Temporal Methods
-Detect anomalies for **a single station across time window**
-
-| Method | Description | Use Case |
-|--------|-------------|----------|
-| **3sigma** | 3σ rule, assumes normal distribution | Extreme outliers only |
-| **mad** ⭐ | Median Absolute Deviation, most robust | **Recommended for weather data** |
-| **iqr** | Interquartile Range (boxplot) | Exploratory analysis |
-| **zscore** | Modified Z-score (MAD-based) | Similar to MAD |
-| **arima** | ARIMA residual analysis | Time series autocorrelation |
-| **stl** | Seasonal-Trend decomposition | Periodic data |
-| **isolation_forest** | Machine learning method | Complex patterns |
-| **lof** | Local Outlier Factor | Non-uniform density |
-
-**Recommended**:
-- Daily monitoring: `--method mad` (balanced sensitivity & robustness)
-- Critical alerts: `--method 3sigma` (extreme events only)
-
-### 🌍 Spatial Methods
-Detect anomalies **across stations at the same timestamp**
-
-**Principle**:
-1. Calculate geographic distance between stations (Haversine formula)
-2. Find neighboring stations (default: within 100km)
-3. Adjust for elevation differences (temp: -0.65°C/100m, pressure: -1.2hPa/10m)
-4. Flag if station value deviates significantly from neighbors' median
-
-**Advantages**:
-- Distinguish sensor faults from real extreme weather
-- Sensor fault: only this station anomalous, neighbors normal
-- Extreme weather: both station and neighbors anomalous
+### Step 2: Spatial Verification ("Neighbor-Check")
+*   **Question**: "Are neighboring stations behaving similarly?"
+*   **Method**: **Pearson Correlation** is calculated between the suspect station and its neighbors (within 100km).
+*   **Result**:
+    *   **High Correlation (>0.6)**: Neighbors are doing the same thing (e.g., all dropping temp). -> **Ignored as Weather**.
+    *   **Low Correlation (<0.3)**: Only this station is acting up. -> **Confirmed as Device Failure**.
 
 ---
 
-## 💡 Usage Examples
+## 🚀 Usage Guide
 
-### Scenario 1: Daily Monitoring
+### 1. Command Input
 
+**Basic Syntax**:
+```bash
+python anomaly_detector.py --end "TIMESTAMP" --window HOURS --temporal-method METHOD --spatial-verify
+```
+
+**Example Command**:
 ```bash
 python anomaly_detector.py \
-  --end "2025-11-21 02:00:00" \
+  --end "2025-11-22 17:00:00" \
   --window 6 \
-  --method mad
+  --temporal-method arima \
+  --spatial-verify
 ```
 
-### Scenario 2: Compare Methods
+| Argument | Description | Recommended Value |
+| :--- | :--- | :--- |
+| `--end` | The target timestamp to detect | `"NOW"` or specific time (e.g., `"2025-11-22 17:00:00"`) |
+| `--window` | Length of historical data to analyze (hours) | `6` |
+| `--temporal-method` | Algorithm for Step 1 (Temporal) | `arima` (best) or `3sigma` |
+| `--spatial-verify` | **Enable Step 2 (Spatial Verification)** | Always include this flag |
+| `--save` | Save report to JSON file | Optional |
 
-```bash
-# Conservative (extreme only)
-python anomaly_detector.py --end "2025-11-21 02:00:00" --window 6 --method 3sigma
-# Result: 1 anomalous station
+---
 
-# Sensitive (more detections)
-python anomaly_detector.py --end "2025-11-21 02:00:00" --window 6 --method iqr
-# Result: 9 anomalous stations
+### 2. Output Explanation
 
-# Balanced (recommended)
-python anomaly_detector.py --end "2025-11-21 02:00:00" --window 6 --method mad
-# Result: 5 anomalous stations
+The system prints a human-readable report to the console.
+
+#### A. Summary Section
+Quickly see if any *real* action is needed.
+
+```text
+Total Stations: 14
+Anomalous Stations: 1
+Normal Stations: 13
+
+Anomaly Breakdown:
+  🔴 Device Failures: 0      <-- CHECK THIS (Real Hardware Issues)
+  🌧️ Weather Events: 1       <-- IGNORE THIS (Just Weather)
+  ⚠️ Suspected:      0       <-- MANUAL CHECK (Uncertain Cases)
 ```
 
-### Scenario 3: Spatial Validation
+#### B. Detailed Report Section
+Shows exactly *why* a station was flagged.
 
-```bash
-# Step 1: Temporal detection finds anomaly
-python anomaly_detector.py --end "2025-11-21 02:00:00" --window 6 --method mad
-# Output: heraclion station wind speed 24.10km/h anomalous
-
-# Step 2: Spatial validation (sensor fault or real weather?)
-python spatial_anomaly_detector.py --time "2025-11-21 02:00:00"
-# If only heraclion anomalous → sensor fault
-# If neighbors also anomalous → extreme weather
+```text
+[ STATION: uth_volos (Volos - University) ]
+  ⚠️  Temperature Anomaly:
+      Method: arima
+      Expected: 12.5°C | Actual: 10.1°C
+      • 2025-11-22 17:00:00: 10.10°C -> 🌧️ Extreme Weather / Env Change
+        └─ Diag: Trend Consistent (Corr: 0.85, 3 neighbors)
 ```
 
-### Scenario 4: Save Results
+*   **Method**: Which temporal algorithm flagged it (`arima`).
+*   **Expected/Actual**: The deviation magnitude.
+*   **Arrow (`->`)**: The final classification after Spatial Verification.
+    *   `🌧️ Extreme Weather`: Because `Trend Consistent` (Correlation 0.85 > 0.6).
+    *   `🔴 Device Failure`: If it had said `Trend Inconsistent` (Correlation < 0.3).
 
-```bash
-python anomaly_detector.py \
-  --end "2025-11-21 02:00:00" \
-  --window 6 \
-  --method mad \
-  --save
-# Generates: anomaly_report_20251121_023456.json
-```
+---
 
-### Scenario 5: Batch Detection
+## 📁 Project Structure
 
-```bash
-#!/bin/bash
-for hour in 00 06 12 18; do
-  python anomaly_detector.py \
-    --end "2025-11-21 ${hour}:00:00" \
-    --window 6 \
-    --method mad \
-    --save \
-    --quiet
-  echo "✓ Done: ${hour}:00"
-done
+```text
+stream_detection/
+├── anomaly_detector.py            # [CORE] Main detection engine (Temporal + Spatial)
+├── streaming_collector_sqlite.py  # [CORE] Real-time data collector
+├── weather_stream.db              # [DATA] SQLite database storing all history
+├── manage_collector.sh            # [OPS] Service management script (start/stop)
+│
+├── view_data.py                   # [TOOL] Query and export DB data
+├── spatial_network_map.html       # [VISUALIZATION] Station network map
+└── README.md                      # Documentation
 ```
 
 ---
 
-## 📁 Files
+## 🔍 Troubleshooting
 
-### Core Files
-```
-streaming_collector_sqlite.py  - Data collector
-weather_stream.db              - SQLite database
-manage_collector.sh            - Management script
-anomaly_detector.py            - Temporal detection (11 methods)
-spatial_anomaly_detector.py    - Spatial detection
-view_data.py                   - Data query tool
-timeseries_anomaly_detector.py - Algorithm library
-README.md                      - This document
-.gitignore                     - Git ignore config
-```
+**Q: Why does MAD report so many anomalies?**
+A: MAD is very sensitive to small deviations in stable weather. Use **ARIMA** for better trend handling.
 
-### Archived (ignore/)
-```
-ignore/
-├── streaming_collector_timescale.py    - TimescaleDB version (deprecated)
-├── streaming_anomaly_detector_timescale.py
-├── TIMESCALEDB_SETUP_GUIDE.md
-└── ...
-```
+**Q: What does "Trend Skipped: no_neighbors" mean?**
+A: The station is geographically isolated (no neighbors within 100km). Spatial verification cannot be performed, so the result relies solely on temporal detection.
 
----
-
-## 🔍 FAQ
-
-**Q1: Where is data stored?**  
-A: `weather_stream.db` SQLite database, updated in real-time
-
-**Q2: View latest data?**  
-```bash
-python view_data.py --realtime
-```
-
-**Q4: Which detection method?**  
-- **Daily**: `mad` - balanced sensitivity & robustness
-- **Conservative**: `3sigma` - extreme anomalies only
-- **Exploratory**: `iqr` - high sensitivity
-
-**Q5: Temporal vs Spatial?**  
-- **Temporal**: One station, different times, detect "if anomalous"
-- **Spatial**: Multiple stations, same time, detect "who is anomalous"
-- **Best**: Use temporal first, then spatial validation
-
-**Q6: Sensor fault vs Extreme weather?**  
-```bash
-# Step 1: Temporal detection
-python anomaly_detector.py --end "TIME" --window 6 --method mad
-
-# Step 2: Spatial validation
-python spatial_anomaly_detector.py --time "TIME"
-# Only station A anomalous → sensor fault
-# Station A + neighbors anomalous → extreme weather
-```
-
----
-
-## 📊 Data Info
-
-**Source**: https://stratus.meteo.noa.gr/data/stations/latestValues_Datagems.geojson
-
-**Stations**: 14 DataGEMS weather stations
-
-**Variables**:
-- Temperature (temp_out, hi_temp, low_temp)
-- Humidity (out_hum)
-- Pressure (bar)
-- Wind (wind_speed, wind_dir, hi_speed)
-- Rain (rain)
-- Location (latitude, longitude, elevation)
-
-**Update Frequency**: Every 10 minutes
-
-**Storage**: All historical data since 2024-11-20
-
----
-
-## 🛠️ Tech Stack
-- **SQLite** - Lightweight database
-- **Data Source**: National Observatory of Athens (NOA)
-
----
-
-## 📝 Changelog
-
-**2024-11-21**
-- ✅ Added spatial anomaly detection
-- ✅ Implemented 11 temporal detection methods
-- ✅ Simplified documentation
-- ✅ Switched from TimescaleDB to SQLite
-
-**2024-11-20**
-- ✅ Completed data collection system
-- ✅ Basic anomaly detection (3σ, MAD, IQR)
-
----
-
-**Last Updated**: 2024-11-21  
-**Version**: v2.0
+**Q: How to check neighbors' data manually?**
+A: The console output automatically prints a data table for the target station and its neighbors when an anomaly is detected.

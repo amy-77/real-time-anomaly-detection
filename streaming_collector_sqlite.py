@@ -1,12 +1,12 @@
 """
-基于SQLite的流式数据采集与存储系统
-==========================================
+SQLite-based streaming ingestion and storage system
+===================================================
 
-使用SQLite数据库存储和管理气象数据流
-- 无需安装额外软件（Python自带）
-- 轻量级、高性能
-- 支持滑动窗口查询
-- 自动创建索引
+Key characteristics:
+- Persist real-time meteorological data with built-in SQLite
+- Lightweight, no extra services required
+- Optimized for sliding-window queries
+- Automatically creates essential indexes
 
 Author: Weather Anomaly Detection Team
 Date: 2025-11-20
@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple, Optional
 import threading
 import logging
 
-# 配置日志
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -39,16 +39,14 @@ logger = logging.getLogger(__name__)
 
 class SQLiteDatabase:
     """
-    SQLite数据库管理器
-    专为时序气象数据优化
+    SQLite database manager tailored for time-series weather data.
     """
-    
     def __init__(self, db_path: str = 'weather_stream.db'):
         """
-        初始化数据库连接
-        
+        Initialize the database connection.
+
         Parameters:
-            db_path: 数据库文件路径
+            db_path: Path to the SQLite database file.
         """
         self.db_path = db_path
         self.conn = None
@@ -56,21 +54,20 @@ class SQLiteDatabase:
         self._init_database()
     
     def _connect(self):
-        """建立数据库连接"""
+        """Establish a database connection."""
         try:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self.conn.row_factory = sqlite3.Row  # 使用字典式游标
-            logger.info(f"成功连接到SQLite数据库: {self.db_path}")
+            self.conn.row_factory = sqlite3.Row  # use dict-style cursor
+            logger.info(f"Connected to SQLite database: {self.db_path}")
         except sqlite3.Error as e:
-            logger.error(f"数据库连接失败: {e}")
+            logger.error(f"Failed to connect to SQLite: {e}")
             raise
     
     def _init_database(self):
-        """初始化数据库表结构"""
+        """Create tables and indexes if they do not exist."""
         try:
             cursor = self.conn.cursor()
-            
-            # 1. 创建站点信息表
+            # 1. Create station metadata table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS stations (
                     station_id TEXT PRIMARY KEY,
@@ -83,9 +80,9 @@ class SQLiteDatabase:
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            logger.info("✓ 站点表已创建")
+            logger.info("✓ Station table ready")
             
-            # 2. 创建观测数据表
+            # 2. Create observations table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS observations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,9 +104,9 @@ class SQLiteDatabase:
                     UNIQUE(time, station_id)
                 )
             """)
-            logger.info("✓ 观测表已创建")
+            logger.info("✓ Observation table ready")
             
-            # 3. 创建索引（加速查询）
+            # 3. Create indexes for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_observations_station_time 
                 ON observations (station_id, time DESC)
@@ -119,9 +116,9 @@ class SQLiteDatabase:
                 CREATE INDEX IF NOT EXISTS idx_observations_time 
                 ON observations (time DESC)
             """)
-            logger.info("✓ 索引已创建")
+            logger.info("✓ Indexes ready")
             
-            # 4. 创建数据采集日志表
+            # 4. Create collection log table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS collection_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,26 +129,24 @@ class SQLiteDatabase:
                     message TEXT
                 )
             """)
-            logger.info("✓ 采集日志表已创建")
+            logger.info("✓ Collection log table ready")
             
             self.conn.commit()
-            logger.info("✓ 数据库初始化完成")
+            logger.info("✓ Database initialized")
             
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"数据库初始化失败: {e}")
+            logger.error(f"Failed to initialize database: {e}")
             raise
     
     def insert_station(self, station_id: str, info: Dict) -> bool:
         """
-        插入或更新站点信息
-        
+        Insert or update station metadata.
         Parameters:
-            station_id: 站点ID
-            info: 站点信息字典
-            
+            station_id: Unique station identifier.
+            info: Metadata dictionary with coordinates and names.
         Returns:
-            成功返回True，失败返回False
+            True if successful, False otherwise.
         """
         try:
             cursor = self.conn.cursor()
@@ -178,18 +173,16 @@ class SQLiteDatabase:
             
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"插入站点信息失败: {e}")
+            logger.error(f"Failed to upsert station info: {e}")
             return False
     
     def insert_observations_batch(self, observations: List[Tuple]) -> int:
         """
-        批量插入观测数据
-        
+        Bulk insert observation rows.
         Parameters:
-            observations: 观测数据列表
-            
+            observations: List of row tuples.
         Returns:
-            成功插入的数量
+            Number of inserted rows.
         """
         try:
             cursor = self.conn.cursor()
@@ -207,11 +200,11 @@ class SQLiteDatabase:
             
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"批量插入失败: {e}")
+            logger.error(f"Failed to insert observation batch: {e}")
             return 0
     
     def log_collection(self, status: str, stations_count: int, obs_count: int, message: str = ""):
-        """记录数据采集日志"""
+        """Persist collection metadata for auditing."""
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
@@ -221,18 +214,18 @@ class SQLiteDatabase:
             self.conn.commit()
         except sqlite3.Error as e:
             self.conn.rollback()
-            logger.error(f"记录采集日志失败: {e}")
+            logger.error(f"Failed to write collection log: {e}")
     
     def get_station_window(self, station_id: str, window_size: int = 6) -> List[Dict]:
         """
-        获取某个站点的最新N条数据（滑动窗口）
-        
+        Retrieve the latest N rows for a specific station (sliding window).
+
         Parameters:
-            station_id: 站点ID
-            window_size: 窗口大小
-            
+            station_id: Station identifier.
+            window_size: Number of rows to return.
+
         Returns:
-            观测数据列表
+            List of observation dictionaries.
         """
         try:
             cursor = self.conn.cursor()
@@ -253,22 +246,22 @@ class SQLiteDatabase:
             return [dict(row) for row in cursor.fetchall()]
             
         except sqlite3.Error as e:
-            logger.error(f"查询窗口数据失败: {e}")
+            logger.error(f"Failed to query window data: {e}")
             return []
     
     def get_stats(self) -> Dict:
-        """获取数据库统计信息"""
+        """Return database statistics such as counts and time range."""
         try:
             cursor = self.conn.cursor()
             
-            # 基础统计
+            # Basic counts
             cursor.execute("SELECT COUNT(*) as count FROM stations")
             stations_count = cursor.fetchone()['count']
             
             cursor.execute("SELECT COUNT(*) as count FROM observations")
             observations_count = cursor.fetchone()['count']
             
-            # 时间范围
+            # Time coverage
             cursor.execute("""
                 SELECT 
                     MIN(time) as earliest,
@@ -277,7 +270,7 @@ class SQLiteDatabase:
             """)
             time_range = cursor.fetchone()
             
-            # 最近采集
+            # Last collection record
             cursor.execute("""
                 SELECT * FROM collection_log 
                 ORDER BY timestamp DESC 
@@ -285,7 +278,7 @@ class SQLiteDatabase:
             """)
             last_collection = cursor.fetchone()
             
-            # 数据库大小
+            # Database size
             db_size = Path(self.db_path).stat().st_size / (1024 * 1024)  # MB
             
             return {
@@ -298,20 +291,19 @@ class SQLiteDatabase:
             }
             
         except sqlite3.Error as e:
-            logger.error(f"获取统计信息失败: {e}")
+            logger.error(f"Failed to fetch statistics: {e}")
             return {}
     
     def close(self):
-        """关闭数据库连接"""
+        """Close the SQLite connection."""
         if self.conn:
             self.conn.close()
-            logger.info("数据库连接已关闭")
+            logger.info("Database connection closed")
 
 
 class StreamingCollector:
     """
-    流式数据采集器
-    持续从GeoJSON源获取数据并存储到SQLite
+    Streaming collector that continuously ingests GeoJSON data into SQLite.
     """
     
     def __init__(self, 
@@ -319,12 +311,10 @@ class StreamingCollector:
                  db: SQLiteDatabase,
                  interval_seconds: int = 600):
         """
-        初始化采集器
-        
         Parameters:
-            geojson_url: 数据源URL
-            db: SQLite数据库实例
-            interval_seconds: 采集间隔（秒）
+            geojson_url: Data source URL.
+            db: SQLiteDatabase instance.
+            interval_seconds: Collection interval in seconds.
         """
         self.geojson_url = geojson_url
         self.db = db
@@ -334,13 +324,13 @@ class StreamingCollector:
     
     def fetch_and_store(self) -> Tuple[bool, str]:
         """
-        获取并存储一批数据
-        
+        Fetch and store one batch of data.
+
         Returns:
-            (成功与否, 消息)
+            Tuple of (success flag, message).
         """
         try:
-            logger.info(f"正在从 {self.geojson_url} 获取数据...")
+            logger.info(f"Fetching data from {self.geojson_url} ...")
             response = requests.get(self.geojson_url, timeout=30)
             response.raise_for_status()
             
@@ -348,12 +338,12 @@ class StreamingCollector:
             features = geojson_data.get('features', [])
             
             if not features:
-                msg = "未获取到任何数据"
+                msg = "No features returned by GeoJSON feed"
                 logger.warning(msg)
                 self.db.log_collection('WARNING', 0, 0, msg)
                 return False, msg
             
-            # 准备批量插入数据
+            # Prepare batched inserts
             station_info_list = []
             observations_list = []
             
@@ -365,7 +355,7 @@ class StreamingCollector:
                 if not station_id:
                     continue
                 
-                # 站点信息
+                # Station metadata
                 station_info = {
                     'station_id': station_id,
                     'station_name_en': props.get('station_name_en'),
@@ -376,7 +366,7 @@ class StreamingCollector:
                 }
                 station_info_list.append(station_info)
                 
-                # 观测数据
+                # Observations
                 timestamp = props.get('ts', 0)
                 if timestamp > 0:
                     time_dt = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
@@ -389,69 +379,69 @@ class StreamingCollector:
                     )
                     observations_list.append(obs)
             
-            # 批量存储站点信息
+            # Store stations
             stations_count = 0
             for info in station_info_list:
                 if self.db.insert_station(info['station_id'], info):
                     stations_count += 1
             
-            # 批量存储观测数据
+            # Store observations
             observations_count = self.db.insert_observations_batch(observations_list)
             
-            msg = f"成功存储 {stations_count} 个站点的 {observations_count} 条观测数据"
+            msg = f"Stored {observations_count} observations across {stations_count} stations"
             logger.info(msg)
             self.db.log_collection('SUCCESS', stations_count, observations_count, msg)
             
             return True, msg
             
         except requests.exceptions.RequestException as e:
-            msg = f"网络请求失败: {e}"
+            msg = f"Network request failed: {e}"
             logger.error(msg)
             self.db.log_collection('ERROR', 0, 0, msg)
             return False, msg
         except Exception as e:
-            msg = f"数据处理失败: {e}"
+            msg = f"Failed to process data: {e}"
             logger.error(msg)
             self.db.log_collection('ERROR', 0, 0, msg)
             return False, msg
     
     def start(self):
-        """启动持续采集"""
+        """Start the background collection thread."""
         if self.running:
-            logger.warning("采集器已在运行中")
+            logger.warning("Collector already running")
             return
         
         self.running = True
         self.thread = threading.Thread(target=self._collection_loop, daemon=True)
         self.thread.start()
-        logger.info("流式采集器已启动")
+        logger.info("Streaming collector started")
     
     def stop(self):
-        """停止采集"""
+        """Stop the background collection loop."""
         self.running = False
         if self.thread:
             self.thread.join(timeout=5)
-        logger.info("流式采集器已停止")
+        logger.info("Streaming collector stopped")
     
     def _collection_loop(self):
-        """采集循环"""
-        logger.info(f"采集循环已启动，间隔: {self.interval_seconds} 秒")
+        """Internal loop executed by the background thread."""
+        logger.info(f"Collection loop started, interval: {self.interval_seconds} seconds")
         
         while self.running:
             cycle_start = time.time()
             
-            # 执行采集
+            # Run collection
             success, msg = self.fetch_and_store()
             
-            # 计算下次采集时间
+            # Determine sleep duration for next cycle
             elapsed = time.time() - cycle_start
             sleep_time = max(0, self.interval_seconds - elapsed)
             
             if self.running and sleep_time > 0:
                 next_collection = datetime.now() + timedelta(seconds=sleep_time)
-                logger.info(f"下次采集时间: {next_collection.strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"Next collection: {next_collection.strftime('%Y-%m-%d %H:%M:%S')}")
                 
-                # 分段睡眠，以便快速响应停止信号
+                # Sleep in 1s chunks to respond to stop signals quickly
                 for _ in range(int(sleep_time)):
                     if not self.running:
                         break
@@ -459,117 +449,104 @@ class StreamingCollector:
 
 
 def main():
-    """主函数"""
+    """CLI entrypoint."""
     parser = argparse.ArgumentParser(
-        description='基于SQLite的流式气象数据采集系统',
+        description='SQLite-based streaming weather data collector',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  # 启动持续采集（每10分钟）
+Examples:
+  # Start continuous collection (10 minutes interval)
   python streaming_collector_sqlite.py --continuous
-  
-  # 采集一次并查看统计
-  python streaming_collector_sqlite.py --once --stats
-  
-  # 自定义采集间隔（5分钟）
+
+  # Custom interval (5 minutes)
   python streaming_collector_sqlite.py --continuous --interval 300
-  
-  # 指定数据库文件
-  python streaming_collector_sqlite.py --continuous --database my_weather.db
         """
     )
     
-    # 数据库配置
-    parser.add_argument('--database', type=str, default='weather_stream.db', help='数据库文件路径')
+    # Database configuration
+    parser.add_argument('--database', type=str, default='weather_stream.db', help='SQLite database file path')
     
-    # 数据源配置
+    # Data source
     parser.add_argument(
         '--url',
         type=str,
         default='https://stratus.meteo.noa.gr/data/stations/latestValues_Datagems.geojson',
-        help='GeoJSON数据源URL'
+        help='GeoJSON data feed URL'
     )
     
-    # 采集配置
-    parser.add_argument('--interval', type=int, default=600, help='采集间隔（秒）')
+    # Collection interval
+    parser.add_argument('--interval', type=int, default=600, help='Collection interval in seconds')
     
-    # 运行模式
+    # Mode
     mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument('--once', action='store_true', help='只采集一次')
-    mode_group.add_argument('--continuous', action='store_true', help='持续采集')
+    mode_group.add_argument('--once', action='store_true', help='Run a single collection cycle')
+    mode_group.add_argument('--continuous', action='store_true', help='Continuously collect data')
     
-    parser.add_argument('--stats', action='store_true', help='显示统计信息')
+    parser.add_argument('--stats', action='store_true', help='Display database statistics')
     
     args = parser.parse_args()
     
-    # 初始化数据库
-    logger.info("连接SQLite数据库...")
+    # Initialize DB
+    logger.info("Connecting to SQLite...")
     db = SQLiteDatabase(args.database)
     
-    # 显示统计信息
+    # Optional stats
     if args.stats:
         stats = db.get_stats()
-        print(f"\n{'='*80}")
-        print("SQLite 数据库统计")
-        print(f"{'='*80}")
-        print(f"数据库文件: {args.database}")
-        print(f"数据库大小: {stats.get('database_size_mb', 'N/A')}")
-        print(f"站点数量: {stats.get('stations_count', 0)}")
-        print(f"观测数量: {stats.get('observations_count', 0)}")
-        print(f"最早数据: {stats.get('earliest_data', 'N/A')}")
-        print(f"最新数据: {stats.get('latest_data', 'N/A')}")
+        print("SQLite Database Statistics")
+        print(f"Database file: {args.database}")
+        print(f"Database size: {stats.get('database_size_mb', 'N/A')}")
+        print(f"Stations: {stats.get('stations_count', 0)}")
+        print(f"Observations: {stats.get('observations_count', 0)}")
+        print(f"Earliest data: {stats.get('earliest_data', 'N/A')}")
+        print(f"Latest data: {stats.get('latest_data', 'N/A')}")
         
         if stats.get('last_collection'):
-            print(f"\n最近采集:")
-            print(f"  时间: {stats['last_collection']['timestamp']}")
-            print(f"  状态: {stats['last_collection']['status']}")
-            print(f"  站点: {stats['last_collection']['stations_count']}")
-            print(f"  观测: {stats['last_collection']['observations_count']}")
+            print(f"\nLast collection:")
+            print(f"  Timestamp: {stats['last_collection']['timestamp']}")
+            print(f"  Status: {stats['last_collection']['status']}")
+            print(f"  Stations: {stats['last_collection']['stations_count']}")
+            print(f"  Observations: {stats['last_collection']['observations_count']}")
         
-        print(f"{'='*80}\n")
     
-    # 创建采集器
+    # Build collector
     collector = StreamingCollector(args.url, db, args.interval)
     
     if args.once:
-        # 单次采集
+        # Single run
         success, msg = collector.fetch_and_store()
         if success:
-            logger.info("✓ 采集成功")
+            logger.info("✓ Collection succeeded")
             if args.stats:
                 stats = db.get_stats()
-                print(f"更新后观测总数: {stats.get('observations_count', 0)}")
+                print(f"Total observations after run: {stats.get('observations_count', 0)}")
         else:
-            logger.error("✗ 采集失败")
+            logger.error("✗ Collection failed")
         db.close()
     
     else:  # continuous
-        # 持续采集
-        print(f"\n{'='*80}")
-        print("SQLite 流式数据采集系统")
-        print(f"{'='*80}")
-        print(f"数据源: {args.url}")
-        print(f"数据库: {args.database}")
-        print(f"采集间隔: {args.interval} 秒")
-        print(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("按 Ctrl+C 停止")
-        print(f"{'='*80}\n")
+        # Continuous mode
+        print("SQLite Streaming Data Collector")
+        print(f"Source URL : {args.url}")
+        print(f"Database   : {args.database}")
+        print(f"Interval   : {args.interval} seconds")
+        print(f"Started at : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # 设置信号处理
+        # Signal handling
         def signal_handler(sig, frame):
-            print("\n\n正在停止采集器...")
+            print("\n\nStopping collector ...")
             collector.stop()
             db.close()
-            print("已安全退出")
+            print("Exited cleanly")
             sys.exit(0)
         
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # 启动采集
+        # Start collection
         collector.start()
         
-        # 保持主线程运行
+        # Keep main thread alive
         try:
             while True:
                 time.sleep(1)

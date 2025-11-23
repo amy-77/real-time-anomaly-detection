@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-气象数据异常检测系统
-基于滑动窗口 + 3σ规则的时序异常检测
+Weather Data Anomaly Detection System
+-------------------------------------
+A comprehensive system for detecting anomalies in weather station data using:
+1. Temporal Analysis (ARIMA, STL, Statistical methods)
+2. Spatial Verification (Neighbor trend correlation)
 """
 
 import sqlite3
@@ -16,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 
 class WindowDataLoader:
-    """滑动窗口数据加载器"""
+    """Loads data within a sliding window from SQLite."""
     
     def __init__(self, db_path: str):
         self.conn = sqlite3.connect(db_path)
@@ -25,7 +28,6 @@ class WindowDataLoader:
                        end_time: str = None, window_hours: int = None) -> pd.DataFrame:
         """
         获取指定站点的滑动窗口数据
-        
         支持两种模式:
         1. 指定 start_time + end_time: 使用精确时间范围
         2. 指定 end_time + window_hours: 从end_time往前推window_hours小时
@@ -58,7 +60,7 @@ class WindowDataLoader:
     
     def get_all_stations(self) -> pd.DataFrame:
         """获取所有站点信息"""
-        return pd.read_sql_query("SELECT station_id, station_name_en FROM stations", self.conn)
+        return pd.read_sql_query("SELECT station_id, station_name_en, latitude, longitude, elevation FROM stations", self.conn)
     
     def close(self):
         if self.conn:
@@ -356,52 +358,49 @@ class SpatialDetector:
     def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """
         计算两点间的地理距离（公里）
-        Haversine公式
         """
         R = 6371  # 地球半径（公里）
-        
         lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
         dlat = lat2 - lat1
         dlon = lon2 - lon1
-        
         a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
         c = 2 * np.arcsin(np.sqrt(a))
-        
         return R * c
+    
     
     @staticmethod
     def find_neighbors(station_idx: int, locations: np.ndarray, 
-                      max_distance: float = 100) -> List[int]:
+                      max_distance: float = 100,
+                      max_elev_diff: float = 500) -> List[int]:
         """
-        找出某站点的邻近站点
-        
+        找出某站点的邻近站点（同时考虑水平距离和海拔差异）
         参数:
             station_idx: 站点索引
             locations: [[lat1, lon1, elev1], [lat2, lon2, elev2], ...]
-            max_distance: 最大距离阈值（公里）
+            max_distance: 最大水平距离阈值（公里）
+            max_elev_diff: 最大海拔差异阈值（米）
         """
         neighbors = []
-        target_lat, target_lon = locations[station_idx, 0], locations[station_idx, 1]
-        
+        target_lat, target_lon, target_elev = locations[station_idx]
         for i, loc in enumerate(locations):
             if i == station_idx:
                 continue
-            
-            dist = SpatialDetector.haversine_distance(
-                target_lat, target_lon, loc[0], loc[1]
-            )
-            
+            # 1. 检查海拔差异
+            elev_diff = abs(target_elev - loc[2])
+            if elev_diff > max_elev_diff:
+                continue
+            # 2. 检查水平距离
+            dist = SpatialDetector.haversine_distance(target_lat, target_lon, loc[0], loc[1])
             if dist <= max_distance:
                 neighbors.append(i)
-        
         return neighbors
+    
     
     @staticmethod
     def elevation_adjusted_value(value: float, elev_diff: float, 
                                  var_type: str = 'temp') -> float:
         """
         根据海拔差异调整变量值
-        
         气象学经验:
         - 温度: 每升高100m降低0.65°C (干绝热递减率)
         - 气压: 每升高10m降低约1.2hPa
@@ -417,32 +416,23 @@ class SpatialDetector:
             # 其他变量不调整
             return value
     
+    
     @staticmethod
     def detect_spatial_anomalies(
         station_data: Dict[str, Dict],  # {station_id: {var: value, lat, lon, elev}}
         variable: str,
         threshold: float = 3.0,
         max_distance: float = 100,
-        min_neighbors: int = 2
+        min_neighbors: int = 2,
+        max_elev_diff: float = 500
     ) -> Tuple[List[str], Dict]:
         """
-        检测空间异常
-        
-        原理:
-        1. 对每个站点，找出邻近站点（距离 < max_distance）
-        2. 计算邻近站点该变量的均值/中位数（考虑海拔修正）
-        3. 如果该站点的值与邻近均值差异过大 → 空间异常
-        
-        返回:
-            anomalous_stations: 异常站点ID列表
-            details: 详细信息
+        检测空间异常，核心循环，逐个站点对比，算出偏离度
         """
         station_ids = list(station_data.keys())
         n_stations = len(station_ids)
-        
         if n_stations < min_neighbors + 1:
             return [], {'error': 'insufficient stations'}
-        
         # 提取位置和值
         locations = np.array([
             [station_data[sid]['latitude'], 
@@ -450,48 +440,43 @@ class SpatialDetector:
              station_data[sid]['elevation']]
             for sid in station_ids
         ])
-        
         values = np.array([station_data[sid].get(variable, np.nan) for sid in station_ids])
-        
         # 检测每个站点
         anomalous_stations = []
         details = {}
-        
         for i, station_id in enumerate(station_ids):
             if np.isnan(values[i]):
                 continue
-            
             # 找邻近站点
-            neighbor_indices = SpatialDetector.find_neighbors(i, locations, max_distance)
-            
+            neighbor_indices = SpatialDetector.find_neighbors(i, locations, max_distance, max_elev_diff)
             if len(neighbor_indices) < min_neighbors:
                 continue  # 邻居太少，无法判断
             
             # 获取邻近站点的值（考虑海拔修正）
             target_elev = locations[i, 2]
             neighbor_values_adjusted = []
+            neighbor_raw_values = []
             
             for j in neighbor_indices:
                 if np.isnan(values[j]):
                     continue
                 
-                elev_diff = locations[j, 2] - target_elev  # 邻居海拔 - 目标海拔
+                elev_diff = locations[j, 2] - target_elev
                 adjusted_val = SpatialDetector.elevation_adjusted_value(
                     values[j], elev_diff, var_type=variable
                 )
                 neighbor_values_adjusted.append(adjusted_val)
+                neighbor_raw_values.append(values[j])
             
             if len(neighbor_values_adjusted) < min_neighbors:
                 continue
             
-            # 计算邻近站点的统计量（使用中位数更鲁棒）
+            # 计算邻近站点的统计量
             neighbor_median = np.median(neighbor_values_adjusted)
             neighbor_mad = np.median(np.abs(np.array(neighbor_values_adjusted) - neighbor_median))
             
             if neighbor_mad == 0:
-                neighbor_mad = np.std(neighbor_values_adjusted)
-                if neighbor_mad == 0:
-                    continue
+                neighbor_mad = np.std(neighbor_values_adjusted) or 1e-6
             
             # 计算偏离程度
             deviation = abs(values[i] - neighbor_median) / (1.4826 * neighbor_mad)
@@ -504,10 +489,15 @@ class SpatialDetector:
                     'neighbor_mad': float(neighbor_mad),
                     'deviation': float(deviation),
                     'n_neighbors': len(neighbor_values_adjusted),
-                    'neighbor_ids': [station_ids[j] for j in neighbor_indices]
+                    'neighbor_ids': [station_ids[j] for j in neighbor_indices],
+                    'neighbor_raw_values': [float(x) for x in neighbor_raw_values],
+                    'neighbor_adj_values': [float(x) for x in neighbor_values_adjusted]
                 }
-        
+                
         return anomalous_stations, details
+
+
+
 
 
 class AnomalyDetector:
@@ -517,8 +507,8 @@ class AnomalyDetector:
     AVAILABLE_METHODS = {
         # 统计方法（基于分布）
         '3sigma': '3σ规则 - 假设正态分布',
-        'iqr': 'IQR箱线图法 - 鲁棒，适合偏态数据',
-        'mad': 'MAD中位数绝对偏差 - 抗噪声',
+        'iqr': 'IQR箱线图法 - 鲁棒，适合偏态数据', # 不可信，弃用
+        'mad': 'MAD中位数绝对偏差 - 抗噪声',  # 不可信，弃用
         'zscore': '改进Z-score - 基于MAD',
         'percentile': '百分位数法 - 定义稀有度',
         
@@ -545,61 +535,167 @@ class AnomalyDetector:
     
     def __init__(self, db_path: str = 'weather_stream.db', 
                  start_time: str = None, end_time: str = None, window_hours: int = None,
-                 method: str = '3sigma'):
+                 temporal_method: str = '3sigma', spatial_method: str = 'mad', spatial_verify: bool = False):
         """
-        初始化异常检测器
+        Initialize Anomaly Detector.
         
-        参数:
-            db_path: 数据库路径
-            start_time: 窗口起始时间 (格式: 'YYYY-MM-DD HH:MM:SS')
-            end_time: 窗口结束时间 (格式: 'YYYY-MM-DD HH:MM:SS')
-            window_hours: 窗口长度（小时）
-            method: 检测方法 (见AVAILABLE_METHODS)
-            
-        使用方式:
-            # 统计方法
-            detector = AnomalyDetector(end_time='2025-11-20 16:00:00', window_hours=6, method='iqr')
-            
-            # 时序方法
-            detector = AnomalyDetector(end_time='2025-11-20 16:00:00', window_hours=6, method='arima')
-            
-            # 机器学习方法
-            detector = AnomalyDetector(end_time='2025-11-20 16:00:00', window_hours=6, method='lof')
+        Args:
+            db_path: Path to SQLite database
+            start_time: Window start time (YYYY-MM-DD HH:MM:SS)
+            end_time: Window end time (YYYY-MM-DD HH:MM:SS)
+            window_hours: Window duration in hours
+            temporal_method: Method for temporal detection (e.g., 'arima', '3sigma')
+            spatial_method: Method for spatial fallback (e.g., 'mad')
+            spatial_verify: Enable spatial cross-verification (Trend Analysis)
         """
         self.start_time = start_time
         self.end_time = end_time
         self.window_hours = window_hours
+        self.temporal_method = temporal_method
+        self.spatial_method = spatial_method
+        self.spatial_verify = spatial_verify
         
-        # 验证参数
+        # Validate parameters
         if not ((start_time and end_time) or (end_time and window_hours)):
-            raise ValueError("必须指定: (start_time + end_time) 或 (end_time + window_hours)")
+            raise ValueError("Must specify: (start_time + end_time) OR (end_time + window_hours)")
         
-        # 验证检测方法
-        if method not in self.AVAILABLE_METHODS:
-            raise ValueError(f"不支持的方法: {method}. 可用: {list(self.AVAILABLE_METHODS.keys())}")
+        # Validate temporal method
+        if temporal_method not in self.AVAILABLE_METHODS:
+            raise ValueError(f"Unsupported method: {temporal_method}. Available: {list(self.AVAILABLE_METHODS.keys())}")
         
-        self.method = method
         self.loader = WindowDataLoader(db_path)
         self.stat_detector = StatisticalDetector()
         self.ts_detector = TimeSeriesDetector()
         self.ml_detector = MLDetector()
     
+    
+    
+    def verify_spatial_trend(self, station_id: str, timestamp: str, 
+                           variable: str, window_minutes: int = 30) -> Dict:
+        """
+        高级空间验证：基于趋势相关性 (Pearson Correlation)
+        逻辑:
+            1. 取目标站点和邻居在 [T-window, T+window] 的数据
+            2. 对数据进行线性插值填补空洞
+            3. 计算目标站点与邻居的皮尔逊相关系数
+            4. 如果强相关(>0.7) -> 环境变化; 弱相关(<0.3) -> 设备故障
+        """
+        # 1. 确定时间范围
+        dt = pd.to_datetime(timestamp)
+        start_dt = dt - timedelta(minutes=window_minutes)
+        end_dt = dt + timedelta(minutes=window_minutes)
+        
+        # 2. 获取所有站点位置信息（为了找邻居）
+        stations_df = self.loader.get_all_stations()
+        locations = np.array([
+            [row['latitude'], row['longitude'], row['elevation']]
+            for _, row in stations_df.iterrows()
+        ])
+        station_ids = stations_df['station_id'].tolist()
+        
+        try:
+            target_idx = station_ids.index(station_id)
+        except ValueError:
+            return {'error': 'station not found'}
+            
+        # 3. 找出邻居 (使用 SpatialDetector 的静态方法)
+        neighbor_indices = SpatialDetector.find_neighbors(
+            target_idx, locations, max_distance=100, max_elev_diff=500
+        )
+        
+        if not neighbor_indices:
+            return {'status': 'no_neighbors', 'correlation': 0, 'msg': '无邻居'}
+            
+        neighbor_ids = [station_ids[i] for i in neighbor_indices]
+        
+        # 4. 查询数据 (目标站点 + 邻居)
+        # 构造查询所有涉及站点的数据
+        all_ids = [station_id] + neighbor_ids
+        placeholders = ','.join(['?'] * len(all_ids))
+        
+        query = f"""
+            SELECT time, station_id, {variable}
+            FROM observations
+            WHERE station_id IN ({placeholders})
+            AND time BETWEEN ? AND ?
+            ORDER BY time
+        """
+        
+        params = all_ids + [start_dt.strftime('%Y-%m-%d %H:%M:%S'), 
+                          end_dt.strftime('%Y-%m-%d %H:%M:%S')]
+        
+        df = pd.read_sql_query(query, self.loader.conn, params=params)
+        
+        if df.empty:
+            return {'status': 'no_data', 'correlation': 0}
+            
+        # 5. 数据透视与清洗
+        df['time'] = pd.to_datetime(df['time'])
+        pivot_df = df.pivot(index='time', columns='station_id', values=variable)
+        
+        # 确保目标站点在列中
+        if station_id not in pivot_df.columns:
+            return {'status': 'no_data', 'correlation': 0}
+            
+        # 6. 插值填补空洞 (关键步骤)
+        # 使用时间索引进行线性插值，限制插值方向
+        pivot_df = pivot_df.interpolate(method='time', limit_direction='both', limit=2)
+        
+        # 再次清理仍为NaN的行（插值失败的）
+        pivot_df.dropna(inplace=True)
+        
+        if len(pivot_df) < 5:  # 数据点太少无法计算相关性
+            return {'status': 'insufficient_points', 'correlation': 0}
+            
+        # 7. 计算相关系数
+        target_series = pivot_df[station_id]
+        correlations = []
+        valid_neighbors = []
+        
+        for nid in neighbor_ids:
+            if nid in pivot_df.columns:
+                # 计算皮尔逊系数
+                corr = target_series.corr(pivot_df[nid])
+                if not np.isnan(corr):
+                    correlations.append(corr)
+                    valid_neighbors.append(nid)
+        
+        if not correlations:
+            return {'status': 'no_valid_correlations', 'correlation': 0}
+            
+        # 取相关系数的中位数或最大值作为最终判定依据
+        # 这里取中位数比较稳健
+        median_corr = np.median(correlations)
+        max_corr = np.max(correlations)
+        
+        return {
+            'status': 'success',
+            'median_corr': median_corr,
+            'max_corr': max_corr,
+            'n_neighbors': len(correlations),
+            'valid_neighbors': valid_neighbors,
+            'is_trend_consistent': median_corr > 0.6 or max_corr > 0.8
+        }
+
+
+
+
     def detect_station(self, station_id: str) -> Dict:
-        """检测单个站点的异常"""
-        # 加载数据
+        """Detect anomalies for a single station."""
+        # Load data
         df = self.loader.get_window_data(station_id, 
                                          start_time=self.start_time,
                                          end_time=self.end_time, 
                                          window_hours=self.window_hours)
         
-        # 数据验证
+        # Validate data
         if df.empty:
-            return {'station_id': station_id, 'status': 'no_data', 'message': '无数据'}
+            return {'station_id': station_id, 'status': 'no_data', 'message': 'No Data'}
         if len(df) < 3:
             return {'station_id': station_id, 'status': 'insufficient_data', 
-                   'message': f'数据不足（仅{len(df)}条）'}
+                   'message': f'Insufficient Data ({len(df)} points)'}
         
-        # 初始化结果
+        # Initialize result structure
         result = {
             'station_id': station_id,
             'window_start': str(df['time'].min()),
@@ -609,10 +705,77 @@ class AnomalyDetector:
             'has_anomaly': False
         }
         
-        # 对每个变量检测异常
+        # Detect each variable
         for var, config in self.DETECTION_VARS.items():
             anomaly_info = self._detect_variable(df, var, config)
             if anomaly_info:
+                # Spatial Verification (if enabled)
+                if self.spatial_verify:
+                    for record in anomaly_info['anomaly_records']:
+                        # === Advanced: Spatial Trend Verification ===
+                        # Use same window length as temporal detection, look backwards only
+                        trend_res = self.verify_spatial_trend(
+                            station_id=station_id,
+                            timestamp=record['time'],
+                            variable=var,
+                            window_minutes=self.window_hours * 60
+                        )
+                        
+                        if trend_res.get('status') == 'success':
+                            corr = trend_res['median_corr']
+                            if trend_res['is_trend_consistent']:
+                                record['type'] = 'weather_event'
+                                record['label'] = '🌧️ Extreme Weather / Env Change'
+                                record['desc'] = f"Trend Consistent (Corr: {corr:.2f}, {trend_res['n_neighbors']} neighbors)"
+                            elif corr < 0.3:
+                                record['type'] = 'critical_failure'
+                                record['label'] = '🔴 Device Failure (High Confidence)'
+                                record['desc'] = f"Trend Inconsistent (Corr: {corr:.2f}, erratic)"
+                            else:
+                                # Grey area (0.3 ~ 0.6)
+                                record['type'] = 'warning'
+                                record['label'] = '⚠️ Suspected Anomaly (Manual Check)'
+                                record['desc'] = f"Weak Correlation (Corr: {corr:.2f})"
+                        else:
+                            # Fallback to static snapshot comparison if trend verification fails
+                            spatial_res = self.detect_spatial_anomalies(
+                                timestamp=record['time'], 
+                                variable_filter=var, 
+                                method=self.spatial_method,
+                                verbose=False
+                            )
+                            
+                            # Check if it's an anomaly in snapshot
+                            if var in spatial_res['variables'] and \
+                               station_id in spatial_res['variables'][var]['anomalous_stations']:
+                                record['label'] = '🔴 Device Failure (Static Check)'
+                                record['desc'] = f"High Deviation (Trend Skipped: {trend_res.get('status', 'unknown')})"
+                            else:
+                                record['label'] = '🌧️ Extreme Weather (Static Check)'
+                                record['desc'] = f"Low Deviation (Trend Skipped: {trend_res.get('status', 'unknown')})"
+                
+                # --- DEBUG: Print full sequence for context ---
+                print(f"\n{'='*40} DEBUG: Sequence Data {'='*40}")
+                print(f"Station: {station_id}, Variable: {var}")
+                print(f"Window: {df['time'].min()} ~ {df['time'].max()}")
+                print("-" * 100)
+                
+                # Extract time series
+                times = df['time'].dt.strftime('%H:%M').values
+                vals = df[var].values
+                
+                # Print
+                for t, v in zip(times, vals):
+                    mark = ""
+                    # Check if this point is flagged
+                    for rec in anomaly_info['anomaly_records']:
+                        if rec['time'].endswith(t + ":00"):
+                            mark = f"<--- ⚠️  Anomaly ({rec.get('deviation', 0):.1f}σ)"
+                            break
+                    print(f"{t} | {v:8.2f} {config['unit']} {mark}")
+                print(f"{'='*100}\n")
+                # --------------------------------------------
+
                 result['anomalies'][var] = anomaly_info
                 result['has_anomaly'] = True
         
@@ -628,25 +791,25 @@ class AnomalyDetector:
             return None
         
         # 根据方法选择检测器
-        if self.method == '3sigma':
+        if self.temporal_method == '3sigma':
             anomaly_mask, stats = self.stat_detector.detect_3sigma(values, config['threshold'])
-        elif self.method == 'iqr':
+        elif self.temporal_method == 'iqr':
             anomaly_mask, stats = self.stat_detector.detect_iqr(values, k=1.5)
-        elif self.method == 'mad':
+        elif self.temporal_method == 'mad':
             anomaly_mask, stats = self.stat_detector.detect_mad(values, threshold=3.5)
-        elif self.method == 'zscore':
+        elif self.temporal_method == 'zscore':
             anomaly_mask, stats = self.stat_detector.detect_zscore(values, threshold=3.0)
-        elif self.method == 'percentile':
+        elif self.temporal_method == 'percentile':
             anomaly_mask, stats = self.stat_detector.detect_percentile(values, lower=1, upper=99)
-        elif self.method == 'arima':
+        elif self.temporal_method == 'arima':
             anomaly_mask, stats = self.ts_detector.detect_arima_residuals(values, threshold=3.0)
-        elif self.method == 'stl':
+        elif self.temporal_method == 'stl':
             anomaly_mask, stats = self.ts_detector.detect_stl_residuals(values, period=6, threshold=3.0)
-        elif self.method == 'isolation_forest':
+        elif self.temporal_method == 'isolation_forest':
             anomaly_mask, stats = self.ml_detector.detect_isolation_forest(values, contamination=0.1)
-        elif self.method == 'lof':
+        elif self.temporal_method == 'lof':
             anomaly_mask, stats = self.ml_detector.detect_lof(values, contamination=0.1)
-        elif self.method == 'ocsvm':
+        elif self.temporal_method == 'ocsvm':
             anomaly_mask, stats = self.ml_detector.detect_one_class_svm(values, contamination=0.1)
         else:
             # 默认3sigma
@@ -676,12 +839,12 @@ class AnomalyDetector:
             }
             
             # 计算偏离度（根据方法）
-            if self.method in ['3sigma', 'zscore', 'arima', 'stl'] and stats.get('std', 0) > 0:
+            if self.temporal_method in ['3sigma', 'zscore', 'arima', 'stl'] and stats.get('std', 0) > 0:
                 mean_val = stats.get('mean', stats.get('median', 0))
                 record['deviation'] = float(abs(values[idx] - mean_val) / stats['std'])
-            elif self.method == 'iqr' and stats.get('iqr', 0) > 0:
+            elif self.temporal_method == 'iqr' and stats.get('iqr', 0) > 0:
                 record['deviation'] = float(abs(values[idx] - stats['median']) / stats['iqr'])
-            elif self.method == 'mad' and stats.get('mad_scaled', 0) > 0:
+            elif self.temporal_method == 'mad' and stats.get('mad_scaled', 0) > 0:
                 record['deviation'] = float(abs(values[idx] - stats['median']) / stats['mad_scaled'])
             else:
                 record['deviation'] = 0.0
@@ -692,7 +855,7 @@ class AnomalyDetector:
             'name': config['name'],
             'unit': config['unit'],
             'count': int(np.sum(anomaly_mask)),
-            'method': self.method,
+            'method': self.temporal_method,
             'statistics': {k: float(v) for k, v in stats.items() if k not in ['is_constant', 'error']},
             'anomaly_records': anomaly_records
         }
@@ -711,23 +874,22 @@ class AnomalyDetector:
     
     def detect_spatial_anomalies(self, timestamp: str = None, 
                                 max_distance: float = 100,
-                                threshold: float = 3.0) -> Dict:
+                                threshold: float = 3.0,
+                                max_elev_diff: float = 500,
+                                variable_filter: str = None,
+                                method: str = 'mad',
+                                verbose: bool = True) -> Dict:
         """
-        空间异常检测 - 检测某一时刻所有站点的空间异常
-        
+        空间异常检测
         参数:
-            timestamp: 检测时刻 (None表示使用窗口最新时刻)
-            max_distance: 邻近站点最大距离（公里）
-            threshold: 异常阈值（几倍MAD）
+            method: 空间检测方法 (支持 'mad', 'zscore', '3sigma')
         """
         # 获取所有站点信息
         stations_df = self.loader.get_all_stations()
-        
         # 获取指定时刻的数据
         if timestamp is None:
             # 使用窗口结束时刻
             timestamp = self.end_time
-        
         # 查询所有站点在该时刻的数据
         query = """
             SELECT o.station_id, o.temp_out, o.out_hum, o.wind_speed, o.bar,
@@ -736,9 +898,7 @@ class AnomalyDetector:
             JOIN stations s ON o.station_id = s.station_id
             WHERE o.time = ?
         """
-        
         df = pd.read_sql_query(query, self.loader.conn, params=(timestamp,))
-        
         if df.empty:
             return {'error': 'no data at specified time', 'timestamp': timestamp}
         
@@ -761,15 +921,60 @@ class AnomalyDetector:
             'timestamp': timestamp,
             'n_stations': len(station_data),
             'max_distance': max_distance,
+            'max_elev_diff': max_elev_diff,
             'threshold': threshold,
             'variables': {}
         }
         
         spatial_detector = SpatialDetector()
         
+        # --- 打印一次邻居关系 (仅基于地理位置和海拔，不依赖变量) ---
+        station_ids = list(station_data.keys())
+        n_stations = len(station_ids)
+        
+        if n_stations > 1 and verbose:
+            locations = np.array([
+                [station_data[sid]['latitude'], 
+                 station_data[sid]['longitude'],
+                 station_data[sid]['elevation']]
+                for sid in station_ids
+            ])
+            
+            print(f"\n{'='*80}")
+            print(f"Spatial Neighbor Analysis (Max Dist: {max_distance}km, Max Elev Diff: {max_elev_diff}m)")
+            print(f"{'='*80}")
+            
+            for i, station_id in enumerate(station_ids):
+                neighbor_indices = spatial_detector.find_neighbors(i, locations, max_distance, max_elev_diff)
+                
+                if not neighbor_indices:
+                    print(f"Station {station_id}: No neighbors found")
+                    continue
+                
+                print(f"Station {station_id} ({station_data[station_id]['station_name']}) - {len(neighbor_indices)} neighbors:")
+                target_elev = locations[i, 2]
+                
+                for idx in neighbor_indices:
+                    nid = station_ids[idx]
+                    n_name = station_data[nid]['station_name']
+                    n_elev = locations[idx, 2]
+                    dist = spatial_detector.haversine_distance(
+                        locations[i, 0], locations[i, 1], 
+                        locations[idx, 0], locations[idx, 1]
+                    )
+                    elev_diff = n_elev - target_elev
+                    print(f"  -> {nid} ({n_name}): Dist {dist:.1f}km, Elev {n_elev:.0f}m (Diff: {elev_diff:+.0f}m)")
+            print(f"{'='*80}\n")
+
+        # --- 执行变量检测 ---
         for var, config in self.DETECTION_VARS.items():
+            # 如果指定了变量过滤器，跳过不相关的变量
+            if variable_filter and var != variable_filter:
+                continue
+                
             anomalous_stations, details = spatial_detector.detect_spatial_anomalies(
-                station_data, var, threshold, max_distance, min_neighbors=2
+                station_data, var, threshold, max_distance, min_neighbors=2,
+                max_elev_diff=max_elev_diff
             )
             
             if anomalous_stations:
@@ -786,44 +991,59 @@ class AnomalyDetector:
         self.loader.close()
 
 
+
+
+
 class ReportGenerator:
-    """报告生成器"""
-    
+    """Generates analysis reports."""
     @staticmethod
     def generate_text_report(results: List[Dict], window_info: str = None, method: str = '3sigma') -> str:
-        """生成文本格式报告"""
+        """Generate text report."""
         method_names = {
-            '3sigma': '3σ规则', 'iqr': 'IQR箱线图法', 'mad': 'MAD中位数绝对偏差',
-            'zscore': '改进Z-score', 'percentile': '百分位数法',
-            'arima': 'ARIMA残差法', 'stl': 'STL分解法',
-            'isolation_forest': '孤立森林', 'lof': '局部离群因子', 'ocsvm': 'One-Class SVM'
+            '3sigma': '3-Sigma Rule', 'iqr': 'IQR Method', 'mad': 'MAD (Median Absolute Deviation)',
+            'zscore': 'Modified Z-Score', 'percentile': 'Percentile',
+            'arima': 'ARIMA Residuals', 'stl': 'STL Decomposition',
+            'isolation_forest': 'Isolation Forest', 'lof': 'Local Outlier Factor', 'ocsvm': 'One-Class SVM'
         }
         
         lines = [
-            "=" * 100,
-            "异常检测报告",
-            "=" * 100,
-            f"检测时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"检测窗口: {window_info}" if window_info else "",
-            f"检测方法: {method_names.get(method, method)}",
+            "ANOMALY DETECTION REPORT",
+            f"Detection Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Window Info: {window_info}" if window_info else "",
+            f"Method: {method_names.get(method, method)}",
             ""
         ]
         
-        # 统计信息
+        # Statistics
         total = len(results)
-        anomaly_count = sum(1 for r in results if r.get('has_anomaly', False))
+        stations_with_anomaly = [r for r in results if r.get('has_anomaly', False)]
+        anomaly_count = len(stations_with_anomaly)
+        
+        # Breakdown by anomaly type
+        type_counts = {'critical_failure': 0, 'weather_event': 0, 'warning': 0}
+        
+        for r in stations_with_anomaly:
+            for var_info in r['anomalies'].values():
+                for rec in var_info['anomaly_records']:
+                    atype = rec.get('type', 'unknown')
+                    if atype in type_counts:
+                        type_counts[atype] += 1
         
         lines.extend([
-            f"总站点数: {total}",
-            f"异常站点数: {anomaly_count}",
-            f"正常站点数: {total - anomaly_count}",
+            f"Total Stations: {total}",
+            f"Anomalous Stations: {anomaly_count}",
+            f"Normal Stations: {total - anomaly_count}",
             "",
-            " 所有站点数据正常" if anomaly_count == 0 else f"⚠️  发现 {anomaly_count} 个站点存在异常",
+            "Anomaly Breakdown:",
+            f"  🔴 Device Failures: {type_counts['critical_failure']}",
+            f"  🌧️ Weather Events: {type_counts['weather_event']} (Ignorable)",
+            f"  ⚠️ Suspected:      {type_counts['warning']}",
+            "",
             "=" * 100,
             ""
         ])
         
-        # 详细异常信息
+        # Detailed Info
         for result in results:
             if result.get('has_anomaly'):
                 lines.extend(ReportGenerator._format_station_anomalies(result))
@@ -832,47 +1052,47 @@ class ReportGenerator:
     
     @staticmethod
     def _format_station_anomalies(result: Dict) -> List[str]:
-        """格式化单个站点的异常信息"""
+        """Format anomalies for a single station."""
         lines = [
-            f"【站点: {result['station_id']} - {result.get('station_name', 'Unknown')}】",
-            f"  窗口: {result['window_start']} ~ {result['window_end']}",
-            f"  数据量: {result['data_count']} 条",
+            f"[Station: {result['station_id']} - {result.get('station_name', 'Unknown')}]",
+            f"  Window: {result['window_start']} ~ {result['window_end']}",
+            f"  Data Points: {result['data_count']}",
             ""
         ]
         
         for var, info in result['anomalies'].items():
             stats = info['statistics']
-            lines.append(f"  ⚠️  {info['name']} 异常:")
-            lines.append(f"      异常次数: {info['count']}")
-            lines.append(f"      检测方法: {info.get('method', 'unknown')}")
+            lines.append(f"  ⚠️  {info['name']} Anomaly:")
+            lines.append(f"      Count: {info['count']}")
+            lines.append(f"      Method: {info.get('method', 'unknown')}")
             
-            # 根据不同方法显示统计信息
+            # Stats
             if 'mean' in stats and 'std' in stats:
-                lines.append(f"      统计信息: 均值={stats['mean']:.2f}{info['unit']}, 标准差={stats['std']:.2f}{info['unit']}")
+                lines.append(f"      Stats: Mean={stats['mean']:.2f}{info['unit']}, Std={stats['std']:.2f}{info['unit']}")
             elif 'median' in stats and 'std' in stats:
-                lines.append(f"      统计信息: 中位数={stats['median']:.2f}{info['unit']}, 标准差={stats['std']:.2f}{info['unit']}")
+                lines.append(f"      Stats: Median={stats['median']:.2f}{info['unit']}, Std={stats['std']:.2f}{info['unit']}")
             elif 'median' in stats and 'iqr' in stats:
-                lines.append(f"      统计信息: 中位数={stats['median']:.2f}{info['unit']}, IQR={stats['iqr']:.2f}{info['unit']}")
+                lines.append(f"      Stats: Median={stats['median']:.2f}{info['unit']}, IQR={stats['iqr']:.2f}{info['unit']}")
             
-            # 显示正常范围
+            # Normal Range
             if 'lower_bound' in stats and 'upper_bound' in stats:
-                lines.append(f"      正常范围: [{stats['lower_bound']:.2f}, {stats['upper_bound']:.2f}] {info['unit']}")
+                lines.append(f"      Normal Range: [{stats['lower_bound']:.2f}, {stats['upper_bound']:.2f}] {info['unit']}")
             
-            # 显示前3个异常
-            for record in info['anomaly_records'][:3]:
-                lines.append(f"      • {record['time']}: {record['value']:.2f}{info['unit']} "
-                           f"(偏离 {record['deviation']:.1f}σ)")
-            
-            if len(info['anomaly_records']) > 3:
-                lines.append(f"      ... 还有 {len(info['anomaly_records']) - 3} 个异常")
+            # Records
+            for record in info['anomaly_records']:
+                line = f"      • {record['time']}: {record['value']:.2f}{info['unit']} (Dev: {record['deviation']:.1f}σ)"
+                if 'label' in record:
+                    line += f" -> {record['label']}"
+                lines.append(line)
+                if 'desc' in record:
+                     lines.append(f"        └─ Diag: {record['desc']}")
             lines.append("")
         
-        lines.extend(["-" * 100, ""])
         return lines
     
     @staticmethod
     def save_json_report(results: List[Dict], window_info: dict = None, filename: str = None) -> str:
-        """保存JSON格式报告"""
+        """Save JSON report."""
         if filename is None:
             filename = f"anomaly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
@@ -895,64 +1115,66 @@ class ReportGenerator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='气象数据异常检测系统 - 支持多种检测方法',
+        description='Weather Data Anomaly Detection System',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例:
-  # 基础统计方法
-  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --method 3sigma
-  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --method iqr
+Examples:
+  # Statistical Method
+  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --temporal-method 3sigma
   
-  # 时序方法（需要statsmodels）
-  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --method arima
-  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --method stl
+  # Time-Series Method (Recommended)
+  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --temporal-method arima --spatial-verify
   
-  # 机器学习方法（需要sklearn）
-  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --method lof
-  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --method isolation_forest
+  # Machine Learning Method
+  python anomaly_detector.py --end "2025-11-20 16:00:00" --window 6 --temporal-method lof
   
-  # 列出所有方法
+  # List all methods
   python anomaly_detector.py --list-methods
         """
     )
     
-    parser.add_argument('--db', default='weather_stream.db', help='数据库文件路径')
-    parser.add_argument('--start', help='窗口起始时间 (格式: YYYY-MM-DD HH:MM:SS)')
-    parser.add_argument('--end', help='窗口结束时间 (格式: YYYY-MM-DD HH:MM:SS)')
-    parser.add_argument('--window', type=int, help='滑动窗口大小（小时）')
-    parser.add_argument('--method', default='3sigma',
+    parser.add_argument('--db', default='weather_stream.db', help='Path to SQLite DB')
+    parser.add_argument('--start', help='Start time (YYYY-MM-DD HH:MM:SS)')
+    parser.add_argument('--end', help='End time (YYYY-MM-DD HH:MM:SS)')
+    parser.add_argument('--window', type=int, help='Window size (hours)')
+    parser.add_argument('--temporal-method', default='3sigma',
                        choices=list(AnomalyDetector.AVAILABLE_METHODS.keys()),
-                       help='检测方法 (默认: 3sigma)')
-    parser.add_argument('--station', help='指定检测的站点ID')
-    parser.add_argument('--save', action='store_true', help='保存结果到JSON文件')
-    parser.add_argument('--quiet', action='store_true', help='静默模式')
-    parser.add_argument('--list-methods', action='store_true', help='列出所有检测方法')
+                       help='Temporal method (default: 3sigma)')
+    parser.add_argument('--spatial-method', default='mad',
+                       choices=['mad', 'zscore', '3sigma'],
+                       help='Spatial fallback method (default: mad)')
+    parser.add_argument('--station', help='Target station ID')
+    parser.add_argument('--save', action='store_true', help='Save result to JSON')
+    parser.add_argument('--spatial-verify', action='store_true', 
+                       help='Enable spatial trend verification')
+    parser.add_argument('--quiet', action='store_true', help='Quiet mode')
+    parser.add_argument('--list-methods', action='store_true', help='List all methods')
     
     args = parser.parse_args()
     
     # 列出检测方法
     if args.list_methods:
         print("\n" + "="*80)
-        print("可用的异常检测方法:")
+        print("Available Detection Methods:")
         print("="*80)
         for method, desc in AnomalyDetector.AVAILABLE_METHODS.items():
             print(f"  {method:20s} - {desc}")
         print("="*80 + "\n")
         return
     
-    # 验证参数
+    # Validate args
     if not ((args.start and args.end) or (args.end and args.window)):
-        parser.error("必须指定: (--start 和 --end) 或 (--end 和 --window)")
+        parser.error("Must specify: (--start AND --end) OR (--end AND --window)")
     
-    # 准备窗口信息
+    # Prepare window info
     if args.start and args.end:
         window_info_str = f"{args.start} ~ {args.end}"
         window_info_dict = {'start_time': args.start, 'end_time': args.end}
     else:
-        window_info_str = f"结束于 {args.end} (往前 {args.window} 小时)"
+        window_info_str = f"End at {args.end} (Lookback {args.window} hours)"
         window_info_dict = {'end_time': args.end, 'window_hours': args.window}
     
-    window_info_dict['method'] = args.method
+    window_info_dict['temporal_method'] = args.temporal_method
     
     # 执行检测
     detector = AnomalyDetector(
@@ -960,7 +1182,9 @@ def main():
         start_time=args.start,
         end_time=args.end,
         window_hours=args.window,
-        method=args.method
+        temporal_method=args.temporal_method,
+        spatial_method=args.spatial_method,
+        spatial_verify=args.spatial_verify
     )
     
     try:
@@ -971,7 +1195,7 @@ def main():
             results = detector.detect_all_stations()
         
         # 生成报告
-        report = ReportGenerator.generate_text_report(results, window_info_str, method=args.method)
+        report = ReportGenerator.generate_text_report(results, window_info_str, method=args.temporal_method)
         
         if not args.quiet:
             print(report)
@@ -979,7 +1203,7 @@ def main():
         # 保存JSON
         if args.save:
             filename = ReportGenerator.save_json_report(results, window_info_dict)
-            print(f"\n✅ 检测结果已保存到: {filename}")
+            print(f"\n 检测结果已保存到: {filename}")
     
     finally:
         detector.close()
@@ -989,5 +1213,6 @@ if __name__ == '__main__':
     main()
 
 
-## 用统计方法 - 快速发现异常值
-# python anomaly_detector.py --end "2025-11-21 02:00:00" --window 6 --method mad
+## 用统计方法 - arima，isolation_forest，3sigma
+# python anomaly_detector.py --end "2025-11-22 17:00:00" --window 6 --temporal-method arima --spatial-verify
+# python anomaly_detector.py --end "2025-11-22 17:00:00" --window 6 --temporal-method isolation_forest --spatial-verify

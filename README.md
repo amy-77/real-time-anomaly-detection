@@ -40,6 +40,8 @@ It is recommended to use Conda or venv to manage dependencies.
 
 ```bash
 # Activate your environment
+source ~/software/miniconda3/bin/activate datagem
+# OR
 conda activate datagem
 ```
 
@@ -95,6 +97,8 @@ CREATE TABLE observations (
 ## 📊 Data Sample
 
 A glimpse of the real-time weather data collected from the stations.
+
+**Data Source**: [NOA DataGEMS Feed](https://stratus.meteo.noa.gr/data/stations/latestValues_Datagems.geojson) (Updates every 10 minutes)
 
 | time | station_id | temp_out (°C) | out_hum (%) | wind_speed (km/h) | bar (hPa) | rain (mm) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |

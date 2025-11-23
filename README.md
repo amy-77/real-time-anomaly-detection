@@ -33,6 +33,67 @@ flowchart TD
 
 ---
 
+## 📦 Installation & Requirements
+
+### 1. Environment Setup
+It is recommended to use Conda or venv to manage dependencies.
+
+```bash
+# Activate your environment
+source ~/software/miniconda3/bin/activate datagem
+# OR
+conda activate datagem
+```
+
+### 2. Install Dependencies
+Install the required Python packages using the provided `requirements.txt`.
+
+```bash
+pip install -r requirements.txt
+```
+
+**Core Dependencies**:
+*   `pandas` & `numpy`: Data manipulation.
+*   `sqlite3`: Lightweight database for streaming data.
+*   `statsmodels`: For ARIMA and Time Series analysis.
+*   `scikit-learn`: For Isolation Forest and other ML models.
+*   `folium`: For map visualization.
+
+---
+
+## 🌊 System Architecture
+
+### 1. Data Flow (Streaming)
+The system follows a **Pull-Based Streaming Architecture**:
+
+1.  **Ingest (`streaming_collector_sqlite.py`)**: 
+    *   Runs as a background service (daemon).
+    *   Fetches GeoJSON data from NOA API **every 10 minutes**.
+    *   Parses and saves data into the local `weather_stream.db`.
+
+2.  **Detect (`anomaly_detector.py`)**:
+    *   Triggered on-demand or via cron/scheduler.
+    *   Uses a **Sliding Window** mechanism to fetch only relevant history (e.g., last 6 hours).
+    *   **Why Sliding Window?** It ensures constant memory usage (O(1)) regardless of database size and provides real-time responsiveness.
+
+### 2. Database Schema
+Data is stored in a single optimized SQLite table `observations`.
+
+```sql
+CREATE TABLE observations (
+    time TIMESTAMP,          -- Observation time
+    station_id TEXT,         -- Unique station identifier
+    temp_out REAL,           -- Temperature
+    out_hum REAL,            -- Humidity
+    wind_speed REAL,         -- Wind Speed
+    bar REAL,                -- Pressure
+    rain REAL,               -- Rain
+    PRIMARY KEY (time, station_id)
+);
+```
+
+---
+
 ## 📊 Data Sample
 
 A glimpse of the real-time weather data collected from the stations.

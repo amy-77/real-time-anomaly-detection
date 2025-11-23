@@ -33,6 +33,27 @@ flowchart TD
 
 ---
 
+## 📊 Data Sample
+
+A glimpse of the real-time weather data collected from the stations.
+
+| time | station_id | temp_out (°C) | out_hum (%) | wind_speed (km/h) | bar (hPa) | rain (mm) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 2025-11-22 17:00:00 | uth_volos | 10.1 | 85 | 12.5 | 1013.2 | 0.0 |
+| 2025-11-22 17:00:00 | volos | 10.4 | 83 | 10.8 | 1013.5 | 0.0 |
+| 2025-11-22 17:00:00 | zagora | 8.2 | 91 | 15.2 | 985.4 | 0.2 |
+| 2025-11-22 16:50:00 | uth_volos | 10.3 | 84 | 11.9 | 1013.1 | 0.0 |
+| 2025-11-22 16:50:00 | volos | 10.6 | 82 | 10.5 | 1013.4 | 0.0 |
+
+**Key Variables**:
+*   **`temp_out`**: Outdoor Temperature (Primary indicator for weather events)
+*   **`out_hum`**: Outdoor Humidity
+*   **`wind_speed`**: Wind Speed (Often fluctuates, triggers anomalies easily)
+*   **`bar`**: Barometric Pressure (Useful for detecting storms)
+*   **`rain`**: Rainfall rate
+
+---
+
 ## 🗺️ Station Network Visualization
 
 Understanding the spatial relationships between stations is crucial for the dual-verification strategy.

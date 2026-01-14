@@ -1,0 +1,92 @@
+{
+  "metadata": {
+    "station_id": "dodoni",
+    "station_name": "Dodoni Weather Station",
+    "analysis_window": {
+      "start": "2026-01-07 00:00:00",
+      "end": "2026-01-14 00:00:00",
+      "duration_hours": 168
+    },
+    "data_points": 1008,
+    "sampling_interval": "10 minutes",
+    "generated_at": "2026-01-14T05:30:00Z"
+  },
+
+  "point_anomalies": {
+    "method": "arima",
+    "total_count": 14,
+    "has_anomaly": true,
+    "by_variable": {
+      "out_hum": {
+        "name": "Humidity",
+        "unit": "%",
+        "count": 2,
+        "records": [
+          {"time": "2026-01-12 12:40:00", "value": 51.0},
+          {"time": "2026-01-12 12:50:00", "value": 51.0}
+        ]
+      },
+      "wind_speed": {
+        "name": "Wind Speed",
+        "unit": "km/h",
+        "count": 12,
+        "records": [
+          {"time": "2026-01-07 13:00:00", "value": 17.7},
+          {"time": "2026-01-07 17:00:00", "value": 24.1}
+        ]
+      }
+    }
+  },
+
+  "subsequence_anomalies": {
+    "method": "matrix_profile",
+    "total_events": 1,
+    "has_anomaly": true,
+    "by_variable": {
+      "temp_out": {
+        "name": "Temperature",
+        "window_length": 100,
+        "has_anomaly": true,
+        "events": [
+          {
+            "start_time": "2026-01-10 02:40:00",
+            "end_time": "2026-01-10 07:20:00",
+            "duration_hours": 4.7,
+            "severity": "high"
+          }
+        ]
+      }
+    }
+  },
+
+  "spatial_verification": {
+    "method": "neighbor_correlation",
+    "description": "Compare anomalies with nearby stations to distinguish weather events from device failures",
+    "enabled": true,
+    "results": [
+      {
+        "time": "2026-01-07 17:00:00",
+        "variable": "wind_speed",
+        "value": 24.1,
+        "type": "weather_event",
+        "correlation": 0.85,
+        "neighbor_stations": ["volos", "portaria"],
+        "description": "High wind consistent with nearby stations"
+      }
+    ]
+  },
+
+  "summary": {
+    "status": "critical",
+    "status_levels": {
+      "normal": "No anomalies detected",
+      "attention": "1-5 point anomalies",
+      "warning": "6-10 point anomalies or has subsequence anomalies",
+      "critical": ">10 point anomalies or multiple subsequence events"
+    },
+    "total_point_anomalies": 14,
+    "total_subsequence_events": 1,
+    "has_point_anomaly": true,
+    "has_subsequence_anomaly": true
+  }
+}
